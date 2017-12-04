@@ -26,25 +26,28 @@ async def create_pool(loop, **kw):
 async def select(sql, args, size=None):
     log(sql,args)
     global __pool
-    async with __pool.get() as conn:
-        async with conn.cursor(aiomysql.DictCursor) as  cur:
-            await cur.execute(sql.replace('?', '%s'), args or ())
-            if size:
-                rs = await cur.fetchmany(size)
-            else:
-                rs = await cur.fetchall()
-        logging.info('rows returned : %s' %len(rs))
+    with (await __pool) as conn:
+        cur = await conn.cursor(aiomysql.DictCursor)
+        await cur.execute(sql.replace('?', '%s'), args or ())
+        if size:
+            rs = await cur.fetchmany(size)
+        else:
+            rs = await cur.fetchall()
+        await cur.close()
+        logging.info('rows returned : %s' % len(rs))
         return rs
+
 
 async def execute(sql, args, autocommit=True):
     log(sql)
-    async with __pool.get() as conn:
+    with (await __pool) as conn:
         if not autocommit:
             await conn.begin()
         try:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(sql.replace('?', '%s'), args)
-                affected = cur.rowcount
+            cur = await conn.cursor()
+            await cur.execute(sql.replace('?', '%s'), args)
+            affected = cur.rowcount
+            await cur.close()
             if not autocommit:
                 await conn.commit()
         except BaseException as e:
@@ -52,6 +55,9 @@ async def execute(sql, args, autocommit=True):
                 await conn.rollback()
             raise
         return affected
+
+
+
 
 def create_args_string(num):
     L = []
@@ -107,13 +113,13 @@ class ModelMetaclass(type):
         primaryKey = None
         for k, v in attrs.items():
             if isinstance(v, Field):
-                logging.info(' found mapping: %s ==> %s' %(k,v))
+                logging.info(' found mapping: %s ==> %s' %(k, v))
                 mappings[k] = v
                 if v.primary_key:
                     if primaryKey:
                         raise RuntimeError('Duplicate primary key for field: %s' % k)
                     primaryKey = k
-               else:
+                else:
                     fields.append(k)
         if not primaryKey:
             raise RuntimeError('Primary key not found')
